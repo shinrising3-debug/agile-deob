@@ -16,21 +16,37 @@ lab).
 
 ## ⚠ Status — read this first
 
-This is honest about what works. The easy/mechanical parts are wired up; the
-hard part (reversing control-flow flattening) is **not finished**, so on a
-heavily-protected assembly a decompiler will still show mangled method bodies.
+Agile.NET ships in several strengths. **Which one you're facing decides whether a
+static tool can help at all**, so the detector tells you, and the toolset has two
+tracks.
 
-| Agile.NET protection | Pass | Status |
+### Track A — static (managed obfuscation)
+For string encryption / proxy calls / control-flow / junk attributes, where the
+real IL is on disk:
+
+| Protection | Pass | Status |
 |---|---|---|
-| String encryption | `strings` | ✅ finds sites; ✅ decrypts & inlines **in `--dynamic` mode** |
+| String encryption | `strings` | ✅ finds sites; ✅ decrypts & inlines in `--dynamic` mode |
 | Proxy / forwarder calls | `proxies` | ✅ pure static forwarders inlined; ⏳ delegate-field variant detected only |
-| Control-flow flattening | `cflow` | 🟡 peephole cleanup only; ⏳ **dispatch recovery not implemented** |
-| Encrypted resources / native stub | (detector) | 🔎 detected, not stripped |
+| Control-flow flattening | `cflow` | 🟡 peephole cleanup; ⏳ dispatch recovery not implemented |
 | Junk attributes | `cleanup` | ✅ removed |
 
-**Making this actually beat de4dot on a specific sample requires tuning the
-passes to that sample's exact protection.** If a particular DLL isn't cleaning
-up, the protection shape in *that file* is what the next passes have to target.
+### Track B — dynamic (native method encryption)
+Agile.NET's strongest mode (`AgileDotNetRT`) **replaces every method body on disk
+with a stub** and decrypts the real IL at JIT time in native code. **No static
+tool — this one, de4dot, anything — can recover it**, because the code isn't in
+the file. You must capture it at runtime and write it back:
+
+```
+tools/IlDumper  (JIT-hook, captures decrypted IL while the app runs)
+      │   out.ildump
+      ▼
+agile-deob reinject target.dll --bodies out.ildump   →   target-restored.dll
+```
+
+The detector reports which track applies (`agile-deob <file> --detect`). If it
+says **native method encryption**, Track A is irrelevant — go straight to
+[Native method encryption](#native-method-encryption).
 
 ---
 
@@ -67,13 +83,40 @@ target's code* to recover strings (do it in a VM).
 
 ### CLI (`agile-deob`)
 ```
-agile-deob <input.dll|exe> [options]
+agile-deob <input.dll|exe> [options]        deobfuscate / detect
   -o, --output <path>   Output path (default: <input>-cleaned.<ext>)
       --detect          Only detect & report; don't rewrite
       --dynamic         Invoke the target's string decrypter (RUNS THE FILE)
       --force           Rewrite even if Agile.NET isn't detected
   -v, --verbose         Debug logging
+
+agile-deob reinject <input> --bodies <f>    re-inject runtime-dumped IL
+  --bodies <file>       .ildump produced by tools/IlDumper (required)
+  -o, --output <path>   Output path (default: <input>-restored.<ext>)
 ```
+
+---
+
+## Native method encryption
+
+If `--detect` reports **native method encryption** (`AgileDotNetRT` + mostly stub
+bodies), the real IL is not in the file and the static passes can't help. Recover
+it in three steps:
+
+1. **Dump at runtime.** Build `tools/IlDumper`, inject it into the host process
+   (e.g. NinjaTrader), and exercise the code so every method JITs. It writes an
+   `.ildump` of the decrypted bodies. See [`tools/IlDumper/README.md`](tools/IlDumper/README.md)
+   — note the two runtime-specific vtable indices you must set first.
+2. **Re-inject.** `agile-deob reinject target.dll --bodies out.ildump -o Restored.dll`
+   parses each captured body against the module and replaces the stub. It
+   auto-selects the right module scope from a process-wide dump (many modules'
+   methods share token values, so each record carries its JIT module handle).
+3. **Read.** Open `Restored.dll` in dnSpy/ILSpy — the real methods are back (for
+   every code path you exercised in step 1).
+
+Coverage equals what you ran: methods never executed stay stubs. This is dynamic
+unpacking, so it's inherently partial — but it's the only thing that works
+against native method encryption.
 
 ---
 
@@ -81,14 +124,17 @@ agile-deob <input.dll|exe> [options]
 
 ```
 AgileDeob.sln
-└─ src/
-   ├─ AgileDeob.Core/        class library — all the logic (cross-platform)
-   │   ├─ Core/              options, context, the Deobfuscator driver, dynamic invoker
-   │   ├─ Detection/         heuristic Agile.NET fingerprinting
-   │   ├─ Passes/            StringDecrypt · ProxyCall · ControlFlow · Cleanup
-   │   └─ Util/              logger, IL helpers
-   ├─ AgileDeob.Cli/         console front end (net8.0)
-   └─ AgileDeob.Gui/         WinForms drag-and-drop front end (net8.0-windows)
+├─ src/
+│  ├─ AgileDeob.Core/        class library — all the logic (cross-platform)
+│  │   ├─ Core/              options, context, the Deobfuscator driver, dynamic invoker
+│  │   ├─ Detection/         Agile.NET fingerprinting (incl. native-RT / stub detection)
+│  │   ├─ Passes/            StringDecrypt · ProxyCall · ControlFlow · Cleanup
+│  │   ├─ Reinject/          .ildump reader + body re-injector (Track B)
+│  │   └─ Util/              logger, IL helpers
+│  ├─ AgileDeob.Cli/         console front end (net8.0): deobfuscate + reinject
+│  └─ AgileDeob.Gui/         WinForms drag-and-drop front end (net8.0-windows)
+└─ tools/
+   └─ IlDumper/             native JIT-hook IL dumper + injector (C++, Windows x64)
 ```
 
 Both front ends call the same `Deobfuscator` in the core. Passes run in order and

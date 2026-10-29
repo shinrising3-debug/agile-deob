@@ -35,5 +35,16 @@ public sealed class DetectionResult
     public string? Version { get; init; }
     public List<string> Markers { get; } = new();
 
+    /// <summary>
+    /// True when the assembly uses Agile.NET's native runtime (AgileDotNetRT)
+    /// with method-body encryption: real IL is decrypted at JIT time by native
+    /// code, so the on-disk bodies are stubs. No static tool can recover them —
+    /// the reinject workflow (runtime dump + body re-injection) is required.
+    /// </summary>
+    public bool NativeMethodEncryption { get; init; }
+
+    /// <summary>Fraction of methods whose body is a tiny stub (supporting signal).</summary>
+    public double StubRatio { get; init; }
+
     public static DetectionResult None => new() { IsAgile = false };
 }

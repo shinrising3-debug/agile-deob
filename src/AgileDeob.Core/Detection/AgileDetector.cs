@@ -36,19 +36,77 @@ public sealed class AgileDetector
         if (HasProxyDelegateFields(module, out int proxyCount))
             markers.Add($"proxy-delegate-fields({proxyCount})");
 
+        bool nativeRt = HasAgileNativeRuntime(module, out string? rtName);
+        if (nativeRt)
+            markers.Add($"native-runtime({rtName})");
+
+        double stubRatio = StubBodyRatio(module);
+        if (stubRatio >= 0.60)
+            markers.Add($"stub-bodies({stubRatio:P0})");
+
         foreach (string m in markers)
             _log.Debug($"marker: {m}");
 
-        // Two or more independent structural signals -> treat as Agile.NET.
-        bool isAgile = markers.Count >= 2;
+        // The AgileDotNetRT module ref is conclusive on its own; otherwise two or
+        // more independent structural signals.
+        bool isAgile = nativeRt || markers.Count >= 2;
+
+        // Native method-body encryption: native runtime present AND the bodies
+        // on disk are overwhelmingly stubs (real IL only appears at JIT time).
+        bool nativeMethodEncryption = nativeRt && stubRatio >= 0.60;
 
         var result = new DetectionResult
         {
             IsAgile = isAgile,
             Version = isAgile ? GuessVersion(module) : null,
+            NativeMethodEncryption = nativeMethodEncryption,
+            StubRatio = stubRatio,
         };
         result.Markers.AddRange(markers);
         return result;
+    }
+
+    /// <summary>
+    /// The definitive native-RT marker: a ModuleRef to AgileDotNetRT(.dll) /
+    /// AgileDotNetRT64(.dll), the native runtime that decrypts method bodies at
+    /// JIT time and is loaded from the gzip'd GUID-named resources.
+    /// </summary>
+    public static bool HasAgileNativeRuntime(ModuleDefMD module, out string? name)
+    {
+        name = null;
+        foreach (TypeDef type in module.GetTypes())
+        foreach (MethodDef m in type.Methods)
+        {
+            if (!m.HasImplMap)
+                continue;
+            string n = m.ImplMap?.Module?.Name?.ToString() ?? "";
+            if (n.StartsWith("AgileDotNetRT", StringComparison.OrdinalIgnoreCase))
+            {
+                name = n;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Fraction of methods whose body is a trivial stub (≤ 3 instructions, e.g.
+    /// <c>ret</c> or <c>ldc.i4.0; ret</c>). Under native method encryption this
+    /// is near-total because every real body is replaced by a stub on disk.
+    /// </summary>
+    public static double StubBodyRatio(ModuleDefMD module)
+    {
+        int withBody = 0, stubs = 0;
+        foreach (TypeDef type in module.GetTypes())
+        foreach (MethodDef m in type.Methods)
+        {
+            if (!m.HasBody)
+                continue;
+            withBody++;
+            if (m.Body.Instructions.Count <= 3)
+                stubs++;
+        }
+        return withBody == 0 ? 0 : (double)stubs / withBody;
     }
 
     /// <summary>

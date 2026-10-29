@@ -58,6 +58,9 @@ public sealed class Deobfuscator
         else
             _log.Warn("Agile.NET not confidently detected");
 
+        if (ctx.Detection.NativeMethodEncryption)
+            WarnNativeEncryption(ctx);
+
         if (_options.DetectOnly)
         {
             foreach (string m in ctx.Detection.Markers)
@@ -129,6 +132,21 @@ public sealed class Deobfuscator
             };
             module.NativeWrite(outPath, opts);
         }
+    }
+
+    private void WarnNativeEncryption(DeobContext ctx)
+    {
+        _log.Warn("==================================================================");
+        _log.Warn("Agile.NET NATIVE METHOD-BODY ENCRYPTION detected.");
+        _log.Warn($"  ~{ctx.Detection.StubRatio:P0} of method bodies on disk are stubs.");
+        _log.Warn("  The real IL is decrypted at JIT time by the native AgileDotNetRT");
+        _log.Warn("  runtime, so NO static tool (this one, de4dot, …) can recover it.");
+        _log.Warn("  The managed passes below will run but cannot restore method logic.");
+        _log.Warn("");
+        _log.Warn("  To recover the methods you must dump the real IL at runtime and");
+        _log.Warn("  re-inject it:  tools/IlDumper  →  agile-deob reinject");
+        _log.Warn("  See README → \"Native method encryption\".");
+        _log.Warn("==================================================================");
     }
 
     private void PrintSummary(DeobContext ctx)
