@@ -1,0 +1,9 @@
+bin/
+obj/
+*.user
+.vs/
+
+# Keep sample binaries out of the repo — they're often someone else's IP.
+samples/*.exe
+samples/*.dll
+samples/*-cleaned.*

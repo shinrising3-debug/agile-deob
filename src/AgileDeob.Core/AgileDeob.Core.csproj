@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>AgileDeob</RootNamespace>
+    <AssemblyName>AgileDeob.Core</AssemblyName>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- dnlib: the metadata/IL library behind de4dot and dnSpy. -->
+    <PackageReference Include="dnlib" Version="4.4.0" />
+  </ItemGroup>
+
+</Project>
