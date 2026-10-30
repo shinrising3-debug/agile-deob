@@ -116,7 +116,7 @@ public sealed class BodyReinjector
         return chosen;
     }
 
-    private static CilBody BuildBody(ModuleDefMD module, MethodDef method, MethodDump d)
+    public static CilBody BuildBody(ModuleDefMD module, MethodDef method, MethodDump d)
     {
         // CorILMethod flags: fat format (0x3) + optional InitLocals (0x10).
         ushort flags = (ushort)(0x3 | (d.InitLocals ? 0x10 : 0));
@@ -144,7 +144,35 @@ public sealed class BodyReinjector
             AddHandlers(module, body, d);
 
         body.OptimizeMacros();
+        Validate(body);   // throw on a malformed body so Run skips just this method
         return body;
+    }
+
+    /// <summary>
+    /// Reject a rebuilt body that would fail to write (e.g. an unresolved token
+    /// operand, or an exception region with a missing boundary). Throwing here
+    /// lets <see cref="Run"/> keep the method's original stub and carry on,
+    /// instead of one bad capture aborting the whole output.
+    /// </summary>
+    private static void Validate(CilBody body)
+    {
+        foreach (Instruction instr in body.Instructions)
+        {
+            if (instr.OpCode.OperandType != dnlib.DotNet.Emit.OperandType.InlineNone &&
+                instr.Operand is null)
+            {
+                throw new InvalidOperationException(
+                    $"unresolved operand for {instr.OpCode} (token not in this module?)");
+            }
+        }
+
+        foreach (ExceptionHandler eh in body.ExceptionHandlers)
+        {
+            if (eh.TryStart is null || eh.HandlerStart is null)
+                throw new InvalidOperationException("exception handler missing a required boundary");
+            if (eh.HandlerType == ExceptionHandlerType.Catch && eh.CatchType is null)
+                throw new InvalidOperationException("catch clause missing its exception type");
+        }
     }
 
     /// <summary>Rebuild exception handlers by mapping IL offsets to instructions.</summary>
