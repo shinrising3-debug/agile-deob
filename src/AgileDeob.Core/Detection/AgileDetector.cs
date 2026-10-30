@@ -205,7 +205,7 @@ public sealed class AgileDetector
         {
             if (instr.OpCode.Code == Code.Call &&
                 instr.Operand is IMethod m &&
-                m.Name is "GetManifestResourceStream" or "GetExecutingAssembly")
+                m.Name?.String is "GetManifestResourceStream" or "GetExecutingAssembly")
             {
                 return true;
             }
