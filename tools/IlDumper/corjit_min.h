@@ -70,24 +70,22 @@ struct CORINFO_EH_CLAUSE {
     DWORD ClassTokenOrFilterOffset;
 };
 
+// On x64 Windows there is a single calling convention (the MS x64 ABI), which
+// is what both MSVC and MinGW use for a Windows target, and what the CLR uses —
+// so no __fastcall/__stdcall annotations are needed or wanted here.
+
 // ICorJitCompiler::compileMethod is vtable slot 0.
-typedef int(__fastcall* CompileMethod_t)(
+typedef int (*CompileMethod_t)(
     void* thisptr, void* comp, CORINFO_METHOD_INFO* info,
     unsigned flags, BYTE** nativeEntry, ULONG* nativeSizeOfCode);
 
 // getJit() exported by clrjit.dll returns ICorJitCompiler*.
-typedef void* (__stdcall* GetJit_t)();
+typedef void* (*GetJit_t)();
 
-// --- ICorJitInfo (the `comp` argument) vtable indices. RUNTIME-SPECIFIC. ---
-// These two are the tuning knobs. Values below are a starting point for
-// .NET Framework 4.8 x64 and will likely need adjustment (README → "Tuning").
-#ifndef IDX_getMethodDefFromMethod
-#define IDX_getMethodDefFromMethod 0   // TODO: set for your runtime
-#endif
-#ifndef IDX_getEHinfo
-#define IDX_getEHinfo 0                // TODO: set for your runtime
-#endif
-
-typedef mdToken(__fastcall* GetMethodDefFromMethod_t)(void* comp, CORINFO_METHOD_HANDLE ftn);
-typedef void(__fastcall* GetEHinfo_t)(void* comp, CORINFO_METHOD_HANDLE ftn,
-                                      unsigned ehNumber, CORINFO_EH_CLAUSE* clause);
+// ICorJitInfo (the `comp` argument) vtable entries used to resolve the token
+// and exception info. Their indices are RUNTIME-SPECIFIC and are supplied at
+// run time via the ILDUMP_TOKIDX / ILDUMP_EHIDX environment variables, so no
+// risky call is made until an index is explicitly provided.
+typedef mdToken (*GetMethodDefFromMethod_t)(void* comp, CORINFO_METHOD_HANDLE ftn);
+typedef void (*GetEHinfo_t)(void* comp, CORINFO_METHOD_HANDLE ftn,
+                            unsigned ehNumber, CORINFO_EH_CLAUSE* clause);

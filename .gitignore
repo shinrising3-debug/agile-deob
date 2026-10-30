@@ -7,3 +7,6 @@ obj/
 samples/*.exe
 samples/*.dll
 samples/*-cleaned.*
+
+# IlDumper build output
+tools/IlDumper/build/
