@@ -23,10 +23,29 @@ static CRITICAL_SECTION g_cs;
 static std::vector<unsigned char> g_buf;     // serialized ILDUMP02 records
 static unsigned g_count = 0;                  // records with a resolved MethodDef token
 static unsigned g_seen = 0;                   // all methods seen
+static unsigned g_skipEH = 0;                 // methods skipped for lack of EH index
 static char g_out[MAX_PATH]  = {0};
 static char g_log[MAX_PATH]  = {0};
 static int  g_tokIdx = -1;                    // ILDUMP_TOKIDX (vtable slot), -1 = probe only
 static int  g_ehIdx  = -1;                    // ILDUMP_EHIDX
+
+// Driver mode: AgileUnpack.exe force-JITs each method and tells us its token
+// before compiling it, so we never need getMethodDefFromMethod at all.
+static volatile LONG g_pendingTok = 0;
+static bool g_driver = false;
+
+extern "C" __declspec(dllexport) void Dumper_SetToken(unsigned tok) {
+    g_driver = true;
+    InterlockedExchange(&g_pendingTok, (LONG)tok);
+}
+static volatile LONG g_installed = 0;
+extern "C" __declspec(dllexport) int Dumper_IsReady() { return (int)g_installed; }
+extern "C" __declspec(dllexport) void Dumper_Flush();          // defined after WriteAll
+extern "C" __declspec(dllexport) void Dumper_Stats(unsigned* seen, unsigned* written, unsigned* skippedEH) {
+    if (seen) *seen = g_seen;
+    if (written) *written = g_count;
+    if (skippedEH) *skippedEH = g_skipEH;
+}
 
 static void logf(const char* fmt, ...) {
     FILE* f = fopen(g_log, "a");
@@ -57,6 +76,12 @@ static void WriteAll() {
     fclose(f);
 }
 
+extern "C" __declspec(dllexport) void Dumper_Flush() {
+    EnterCriticalSection(&g_cs);
+    WriteAll();
+    LeaveCriticalSection(&g_cs);
+}
+
 static int Hooked(void* thisptr, void* comp, CORINFO_METHOD_INFO* info,
                   unsigned flags, BYTE** ne, ULONG* ns) {
     int rc = g_orig(thisptr, comp, info, flags, ne, ns);  // decrypt + real JIT first
@@ -66,10 +91,11 @@ static int Hooked(void* thisptr, void* comp, CORINFO_METHOD_INFO* info,
     g_seen++;
 
     mdToken token = 0;
-    if (g_tokIdx >= 0) {
+    if (g_driver) {
+        token = (mdToken)InterlockedExchange(&g_pendingTok, 0);  // consume driver-fed token
+    } else if (g_tokIdx >= 0) {
         void** vt = *(void***)comp;
-        GetMethodDefFromMethod_t getTok = (GetMethodDefFromMethod_t)vt[g_tokIdx];
-        token = getTok(comp, info->ftn);        // only when an index is configured
+        token = ((GetMethodDefFromMethod_t)vt[g_tokIdx])(comp, info->ftn);
     }
 
     // Diagnostic log for the first methods seen.
@@ -77,11 +103,17 @@ static int Hooked(void* thisptr, void* comp, CORINFO_METHOD_INFO* info,
         char hx[49]; int k = 0;
         for (unsigned i = 0; i < info->ILCodeSize && i < 16; i++)
             k += sprintf(hx + k, "%02x", info->ILCode[i]);
-        logf("  method#%u scope=%p ilSize=%u maxStack=%u token=0x%08x il=%s",
-             g_seen, info->scope, info->ILCodeSize, info->maxStack, token, hx);
+        logf("  method#%u scope=%p ilSize=%u maxStack=%u EH=%u token=0x%08x il=%s",
+             g_seen, info->scope, info->ILCodeSize, info->maxStack, info->EHcount, token, hx);
     }
 
-    if (g_tokIdx >= 0 && (token >> 24) == 0x06) {
+    // Without an EH vtable index we can't capture exception regions, and a body
+    // with EH but no clauses would be invalid — so skip those methods (they stay
+    // stubs; the reinjector leaves the original) rather than emit a broken body.
+    bool ehBlocked = (info->EHcount > 0 && g_ehIdx < 0);
+    if (ehBlocked) g_skipEH++;
+
+    if ((token >> 24) == 0x06 && !ehBlocked) {
         put32(g_buf, token);
         put64(g_buf, (unsigned long long)(uintptr_t)info->scope);
         put16(g_buf, (unsigned short)info->maxStack);
@@ -124,7 +156,8 @@ static DWORD WINAPI Install(LPVOID) {
     if (VirtualProtect(&vt[0], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
         vt[0] = (void*)&Hooked;
         VirtualProtect(&vt[0], sizeof(void*), old, &old);
-        logf("JIT hook installed (tokIdx=%d ehIdx=%d). Exercise the indicator now.", g_tokIdx, g_ehIdx);
+        InterlockedExchange(&g_installed, 1);
+        logf("JIT hook installed (tokIdx=%d ehIdx=%d).", g_tokIdx, g_ehIdx);
     } else {
         logf("VirtualProtect failed");
     }
@@ -170,8 +203,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
         CreateThread(nullptr, 0, Install, nullptr, 0, nullptr);
     } else if (reason == DLL_PROCESS_DETACH) {
         EnterCriticalSection(&g_cs);
-        if (g_tokIdx >= 0) WriteAll();
-        logf("detach: methods seen=%u, records written=%u", g_seen, g_count);
+        if (g_tokIdx >= 0 || g_driver) WriteAll();
+        logf("detach: methods seen=%u, records written=%u, skipped-for-EH=%u", g_seen, g_count, g_skipEH);
         LeaveCriticalSection(&g_cs);
     }
     return TRUE;
